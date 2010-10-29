@@ -1,0 +1,12 @@
+%% -*- tab-width: 4;erlang-indent-level: 4;indent-tabs-mode: nil -*-
+{application, gossip,
+ [
+  {description, "An erlanG Opensource Stack for Session Initiation Protocol"},
+  {vsn, "0.1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib                
+                 ]},
+  {env, []}
+ ]}.
