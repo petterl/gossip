@@ -1,6 +1,9 @@
 all: deps compile doc
 
-.PHONY: doc
+.PHONY: doc test
+
+test:
+	rebar skip_deps=true eunit
 
 deps: get-deps
 
