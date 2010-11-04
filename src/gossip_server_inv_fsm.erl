@@ -113,8 +113,9 @@ init({Id, STQ, Con, CallBackMods, _Opts}) ->
 	{stop, Reason :: term(), NewState :: atom()}.
 proceeding(timeout, State = #state{con = Con}) ->
     %% Nothing sent from user in 200 ms, send a 100 Trying to network
-    gossip_transport:send(Con, stq:new(100,<<"Trying">>, {2,0})),
-    {next_state, proceeding, State};
+    TryingSTQ = stq:new(100,<<"Trying">>, {2,0}),
+    gossip_transport:send(Con, TryingSTQ),
+    {next_state, proceeding, State#state{resp_stq = TryingSTQ}};
 proceeding({recv, STQ}, State = #state{con = Con, resp_stq = RespSTQ}) 
   when RespSTQ =/= undefined->
     case stq:method(STQ) of
