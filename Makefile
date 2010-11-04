@@ -7,5 +7,8 @@ test:
 
 deps: get-deps
 
-compile doc clean eunit get-deps:
+doc:
+	rebar skip_deps=true doc
+
+compile clean eunit get-deps:
 	rebar $@
