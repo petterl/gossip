@@ -1,6 +1,8 @@
-all: compile doc
+all: deps compile doc
 
 .PHONY: doc
 
-compile doc clean eunit:
+deps: get-deps
+
+compile doc clean eunit get-deps:
 	rebar $@
