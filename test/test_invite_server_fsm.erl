@@ -7,14 +7,14 @@
 -include_lib("eunit/include/eunit.hrl").
 
 invite_test_() ->
-    {foreach, fun setup/0, fun teardown/1, [fun sunny_day/1,
-                                            fun wait_for_100/1,
-                                            fun wait_for_100_retransmit_inv/1]}.
+    {setup, fun setup/0, fun teardown/1, [fun sunny_day/0,
+                                          fun wait_for_100/0,
+                                          fun wait_for_100_retransmit_inv/0]}.
 
 setup() ->
-
     MeckModules = [meck_module, gossip_transport],
-    lists:foreach(fun meck:new/1, MeckModules).
+    lists:foreach(fun meck:new/1, MeckModules),
+    MeckModules.
 
 setup(Id, Stq, ConInfo, Opts) ->
     Self = self(),
@@ -26,13 +26,14 @@ setup(Id, Stq, ConInfo, Opts) ->
                                         end),
     Res = (catch gossip_server_inv_fsm:start_link(Id, Stq, ConInfo, [meck_module], Opts)),
     ?assertMatch({ok, Pid} when is_pid(Pid), Res),
+    {ok, Pid} = Res,
+    unlink(Pid),
     Res.
 
 teardown(_) ->
-    io:format(user, "teardown", []),
     meck:unload().
 
-sunny_day(_) ->
+sunny_day() ->
     Stq = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
     Stq200 = stq:new(200, <<"OK">>, {2,0}),
     
@@ -41,14 +42,15 @@ sunny_day(_) ->
     %% Check that invite is sent to application
     ?assertMatch({"sunny_day", Stq, phony}, recv()),
 
-    gossip_server_inv_fsm:send(Pid, Stq200),
+    ?assertEqual(ok, gossip_server_inv_fsm:send(Pid, Stq200)),
 
     ?assertMatch(Stq200, recv()),
-    ?assertEqual(timeout, recv(1)),
+    erlang:monitor(process, Pid),
+    ?assertMatch({'DOWN',_,_,_,_}, recv()),
     
     ok.
 
-wait_for_100(_) ->
+wait_for_100() ->
     
     Stq = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
     Stq200 = stq:new(200, <<"OK">>, {2,0}),
@@ -69,7 +71,7 @@ wait_for_100(_) ->
     
     ok.
 
-wait_for_100_retransmit_inv(_) ->
+wait_for_100_retransmit_inv() ->
     
     StqInv = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
     Stq200 = stq:new(200, <<"OK">>, {2,0}),
