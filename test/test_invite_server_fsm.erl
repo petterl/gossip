@@ -16,7 +16,7 @@ setup() ->
     MeckModules = [meck_module, gossip_transport],
     lists:foreach(fun meck:new/1, MeckModules).
 
-setup(Stq, Id, ConInfo, Opts) ->
+setup(Id, Stq, ConInfo, Opts) ->
     Self = self(),
     meck:expect(meck_module, invite, fun(MeckId, MeckStq, MeckConInfo) ->
                                              Self ! {MeckId, MeckStq, MeckConInfo}
