@@ -63,7 +63,9 @@
 -record(state, { id :: transaction_id(), 
 		 con :: connection_info(), 
 		 resp_stq :: stq_opaque() | undefined,
-		 callback_modules = [] :: list(atom())}).
+		 callback_modules = [] :: list(atom()),
+		 timerI = 10000,
+		 timerG = 365000}).
 
 %%====================================================================
 %% API
@@ -95,10 +97,8 @@ transport_error(Pid, Reason) ->
 %%====================================================================
 %% @doc Initial state, sends INVITE to user and moves to Proceeding state
 -spec init({transaction_id(), stq_opaque(), 
-	    connection_info(), Opts :: term()}) -> 
-    {ok, StateName :: atom(), State :: #state{}} |
-	{ok, StateName :: atom(), State :: #state{}, Timeout :: integer()} |
-	ignore | {stop, StopReason :: term()}.
+	    connection_info(), list(atom()), Opts :: term()}) -> 
+	{ok, StateName :: atom(), State :: #state{}, Timeout :: integer()}.
 init({Id, STQ, Con, CallBackMods, _Opts}) ->
     call(CallBackMods, invite, [Id, STQ, Con]),
     {ok, proceeding, #state{id = Id, con = Con, 
@@ -108,9 +108,7 @@ init({Id, STQ, Con, CallBackMods, _Opts}) ->
 %%      and move to Completed state
 -spec proceeding(Event :: term(), State :: #state{}) -> 
     {next_state, NextStateName :: atom(), NextState :: #state{}} |
-	{next_state, NextStateName :: atom(), NextState :: #state{},
-	 Timeout :: integer()} |
-	{stop, Reason :: term(), NewState :: atom()}.
+	{stop, Reason :: term(), NewState :: #state{}}.
 proceeding(timeout, State = #state{con = Con}) ->
     %% Nothing sent from user in 200 ms, send a 100 Trying to network
     TryingSTQ = stq:new(100,<<"Trying">>, {2,0}),
@@ -127,7 +125,7 @@ proceeding({recv, STQ}, State = #state{con = Con, resp_stq = RespSTQ})
 	    %% Ignore other messages receivied
 	    {next_state, proceeding, State}
     end;
-proceeding({send, STQ}, State = #state{con = Con}) ->
+proceeding({send, STQ}, State = #state{con = Con, timerG = TG}) ->
     %% User sending an response to network, send it
     gossip_transport:send(Con, STQ),
     case stq:code(STQ) of
@@ -136,7 +134,8 @@ proceeding({send, STQ}, State = #state{con = Con}) ->
 	    {next_state, proceeding, State#state{resp_stq=STQ}};
 	Code when Code >= 300, Code =< 699 -> 
 	    %% Final response which we will recieve ACK for
-	    %% TODO: Start Timer G
+	    %% Start Timer G
+	    gen_fsm:start_timer(TG, timerG),
 	    {next_state, completed, State#state{resp_stq=STQ}};
 	Code when Code >= 200, Code =< 299 -> 
 	    %% Final ok response, shut down
@@ -153,16 +152,19 @@ proceeding({transport_error, Reason},
     {next_state, NextStateName :: atom(), NextState :: #state{}} |         
 	{next_state,NextStateName :: atom(),NextState :: #state{},
 	 Timeout::integer()} |
-	{stop, Reason :: term(), NewState :: atom()}.
-completed({timeout, timerG}, State) ->
-    %% resend last resp_stq
-    %% restart timerG
+	{stop, Reason :: term(), NewState :: #state{}}.
+completed({timeout, _Ref, timerG}, State = #state{con=Con, resp_stq = RespSTQ,
+						  timerG = TG}) ->
+    %% Resend last response
+    gossip_transport:send(Con, RespSTQ),
+    %% Restart timerG
+    gen_fsm:start_timer(TG, timerG),
     {next_state, completed, State};
 completed({timeout, timerH}, State) ->
-    %% resend last resp_stq
+    %% Timeout, terminate
     {stop, normal, State};
 completed({recv, STQ}, State = #state{id = Id, con = Con, 
-				      resp_stq = RespSTQ,
+				      resp_stq = RespSTQ, timerI = TI,
 				      callback_modules=CallBackMods}) ->
     %% Received message from network
     case stq:method(STQ) of
@@ -173,7 +175,7 @@ completed({recv, STQ}, State = #state{id = Id, con = Con,
 	invite ->
 	    %% ReReceived an INVITE, resend last response
 	    gossip_transport:send(Con, RespSTQ),
-	    {next_state, completed, State};
+	    {next_state, completed, State, TI};
 	_ ->
 	    %% Other messages are ignored
 	    {next_state, completed, State}
@@ -186,11 +188,8 @@ completed({transport_error, Reason},
 
 %% @doc Confirmed state, waiting timerI and shutdown
 -spec confirmed(Event :: term(), State::#state{}) -> 
-    {next_state, NextStateName :: atom(), NextState :: #state{}} |         
-	{next_state,NextStateName :: atom(),NextState :: #state{},
-	 Timeout::integer()} |
-	{stop, Reason :: term(), NewState :: atom()}.
-confirmed({timeout, timerI}, State) ->
+	{stop, Reason :: term(), NewState :: #state{}}.
+confirmed(timeout, State) ->
     {stop, normal, State}.
 
 %%--------------------------------------------------------------------
