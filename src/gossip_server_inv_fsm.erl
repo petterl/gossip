@@ -64,8 +64,9 @@
 		 con :: connection_info(), 
 		 resp_stq :: stq_opaque() | undefined,
 		 callback_modules = [] :: list(atom()),
-		 timerI = 10000,
-		 timerG = 365000}).
+		 timer1 = 500,
+		 timer2 = 4000,
+		 timer4 = 5000}).
 
 %%====================================================================
 %% API
@@ -99,10 +100,15 @@ transport_error(Pid, Reason) ->
 -spec init({transaction_id(), stq_opaque(), 
 	    connection_info(), list(atom()), Opts :: term()}) -> 
 	{ok, StateName :: atom(), State :: #state{}, Timeout :: integer()}.
-init({Id, STQ, Con, CallBackMods, _Opts}) ->
+init({Id, STQ, Con, CallBackMods, Opts}) ->
     call(CallBackMods, invite, [Id, STQ, Con]),
+    T1 = proplists:get_value(t1, Opts, #state.timer1),
+    T2 = proplists:get_value(t2, Opts, #state.timer2),
+    T4 = proplists:get_value(t4, Opts, #state.timer4),
     {ok, proceeding, #state{id = Id, con = Con, 
-			    callback_modules = CallBackMods}, 200}.
+			    callback_modules = CallBackMods,
+			    timer1 = T1, timer2 = T2,
+			    timer4 = T4}, 200}.
 
 %% @doc Proceeding state, waiting for user to send response to network, 
 %%      and move to Completed state
@@ -125,7 +131,7 @@ proceeding({recv, STQ}, State = #state{con = Con, resp_stq = RespSTQ})
 	    %% Ignore other messages receivied
 	    {next_state, proceeding, State}
     end;
-proceeding({send, STQ}, State = #state{con = Con, timerG = TG}) ->
+proceeding({send, STQ}, State = #state{con = Con, timer1 = T1}) ->
     %% User sending an response to network, send it
     gossip_transport:send(Con, STQ),
     case stq:code(STQ) of
@@ -134,8 +140,13 @@ proceeding({send, STQ}, State = #state{con = Con, timerG = TG}) ->
 	    {next_state, proceeding, State#state{resp_stq=STQ}};
 	Code when Code >= 300, Code =< 699 -> 
 	    %% Final response which we will recieve ACK for
-	    %% Start Timer G
-	    gen_fsm:start_timer(TG, timerG),
+	    case reliable_transport(Con) of
+		false ->
+		    %% Start Timer G if unreliable transport
+		    gen_fsm:start_timer(T1, timerG);
+		_ -> ok
+	    end,
+	    gen_fsm:start_timer(64 * T1, timerH),
 	    {next_state, completed, State#state{resp_stq=STQ}};
 	Code when Code >= 200, Code =< 299 -> 
 	    %% Final ok response, shut down
@@ -154,28 +165,37 @@ proceeding({transport_error, Reason},
 	 Timeout::integer()} |
 	{stop, Reason :: term(), NewState :: #state{}}.
 completed({timeout, _Ref, timerG}, State = #state{con=Con, resp_stq = RespSTQ,
-						  timerG = TG}) ->
+						  timer1 = T1, timer2 = T2}) ->
     %% Resend last response
     gossip_transport:send(Con, RespSTQ),
     %% Restart timerG
-    gen_fsm:start_timer(TG, timerG),
+    NewTG = min(2 * T1, T2),
+    gen_fsm:start_timer(NewTG, timerG),
     {next_state, completed, State};
-completed({timeout, timerH}, State) ->
+completed({timeout, _Ref, timerH}, 
+	  State = #state{id = Id, con = Con, 
+			 callback_modules=CallBackMods}) ->
+    call(CallBackMods, transport_error, [Id, transaction_failure, Con]),
     %% Timeout, terminate
     {stop, normal, State};
 completed({recv, STQ}, State = #state{id = Id, con = Con, 
-				      resp_stq = RespSTQ, timerI = TI,
+				      resp_stq = RespSTQ, timer4 = T4,
 				      callback_modules=CallBackMods}) ->
     %% Received message from network
     case stq:method(STQ) of
 	ack ->
 	    %% Send ACK to user
 	    call(CallBackMods, ack, [Id, STQ, Con]),
+	    TI = case reliable_transport(Con) of
+			 true -> 0;
+			 false -> T4
+		     end,
+	    gen_fsm:start_timer(TI, timerI),
 	    {next_state, confirmed, State};
 	invite ->
 	    %% ReReceived an INVITE, resend last response
 	    gossip_transport:send(Con, RespSTQ),
-	    {next_state, completed, State, TI};
+	    {next_state, completed, State};
 	_ ->
 	    %% Other messages are ignored
 	    {next_state, completed, State}
@@ -189,8 +209,18 @@ completed({transport_error, Reason},
 %% @doc Confirmed state, waiting timerI and shutdown
 -spec confirmed(Event :: term(), State::#state{}) -> 
 	{stop, Reason :: term(), NewState :: #state{}}.
-confirmed(timeout, State) ->
-    {stop, normal, State}.
+confirmed({recv, STQ}, State) ->
+    %% Received additional ACK from network
+    case stq:method(STQ) of
+	ack -> ok
+    end,
+    {next_state, comfirmed, State};
+confirmed({timeout, _Ref, timerI}, State) ->
+    %% Ignore all timeouts
+    {stop, normal, State};
+confirmed({timeout, _Ref, _Timer}, State) ->
+    %% Ignore all other timeouts
+    {next_state, comfirmed, State}.
 
 %%--------------------------------------------------------------------
 %% Function: 
@@ -264,3 +294,11 @@ call([], _Fun, _Args) ->
 call([Mod | T], Fun, Args) ->
     apply(Mod, Fun, Args),
     call(T, Fun, Args).
+
+reliable_transport(Con) ->
+    case gossip_transport:type(Con) of
+	tcp ->
+	    true;
+	_ ->
+	    false
+    end.
