@@ -1,8 +1,7 @@
 %% @author Petter Sandholdt <petter@sandholdt.se>
 %% @copyright 2010
-%% 
-%%   INVITE Server transaction FSM
-%%
+%% @doc INVITE Server transaction FSM.
+
 %%                                |INVITE
 %%                                |pass INV to TU
 %%             INVITE             V send 100 if TU won't in 200ms
@@ -46,7 +45,6 @@
 %%                          +-----------+
 %%
 %%               Figure 7: INVITE server transaction
-%%
 -module(gossip_server_inv_fsm).
 
 -behaviour(gen_fsm).
@@ -117,20 +115,23 @@ init({Id, STQ, Con, CallBackMods, Opts}) ->
 	{stop, Reason :: term(), NewState :: #state{}}.
 proceeding(timeout, State = #state{con = Con}) ->
     %% Nothing sent from user in 200 ms, send a 100 Trying to network
+    %% TODO: Generate 100 Trying from incoming STQ to set all headers needed.
     TryingSTQ = stq:new(100,<<"Trying">>, {2,0}),
     gossip_transport:send(Con, TryingSTQ),
     {next_state, proceeding, State#state{resp_stq = TryingSTQ}};
-proceeding({recv, STQ}, State = #state{con = Con, resp_stq = RespSTQ}) 
-  when RespSTQ =/= undefined->
-    case stq:method(STQ) of
-	invite ->
+proceeding({recv, STQ}, State = #state{con = Con, resp_stq = RespSTQ}) ->
+    case {stq:method(STQ), RespSTQ} of
+	{_,undefined} ->
+	    %% No Provisional sent yet, just ignore message and continue.
+	    ok;
+	{invite,_} ->
 	    %% ReReceived an INVITE, resend last provisional response
-	    gossip_transport:send(Con, RespSTQ),
-	    {next_state, proceeding, State};
+	    gossip_transport:send(Con, RespSTQ);
 	_ ->
 	    %% Ignore other messages receivied
-	    {next_state, proceeding, State}
-    end;
+	    ok
+    end,
+    {next_state, proceeding, State};
 proceeding({send, STQ}, State = #state{con = Con, timer1 = T1}) ->
     %% User sending an response to network, send it
     gossip_transport:send(Con, STQ),
@@ -169,8 +170,8 @@ completed({timeout, _Ref, timerG}, State = #state{con=Con, resp_stq = RespSTQ,
     %% Resend last response
     gossip_transport:send(Con, RespSTQ),
     %% Restart timerG
-    NewTG = min(2 * T1, T2),
-    gen_fsm:start_timer(NewTG, timerG),
+    TG = min(2 * T1, T2),
+    gen_fsm:start_timer(TG, timerG),
     {next_state, completed, State};
 completed({timeout, _Ref, timerH}, 
 	  State = #state{id = Id, con = Con, 
