@@ -39,8 +39,8 @@ invite_test_() ->
       {"INV -> 180 -> 200",fun provisional_resp/0},
       {"INV -> 180 -> INV -> 180 -> 200",
        fun provisional_resp_restransmit_inv/0},
-      {"INV -> 301 -> ACK",fun final_non_200_resp/0}
-      ]}}.
+      {"INV -> 301 -> ACK",fun final_non_200_resp/0},
+      {"INV -> 301 -> ACK (udp)",fun final_non_200_resp_nonreliable/0}]}}.
 
 setup() ->
     code:unstick_mod(gen_fsm),
@@ -173,6 +173,7 @@ provisional_resp_restransmit_inv() ->
 
 final_non_200_resp() ->
     T1 = 100,
+    TH = 64 * T1,
     T4 = 10,
     StqInv = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
     Stq301 = stq:new(301, <<"Moved Permanently">>, {2,0}),
@@ -184,7 +185,7 @@ final_non_200_resp() ->
 
     %% Send 301 and check that it is sent to transport
     ?assertSend(Pid, Stq301),
-    ?assertMatch({T1, timerG, _}, recv(timer)),
+    ?assertMatch({TH, timerH, _}, recv(timer)),
     
     %% Send ACK and check that it is sent to application
     ?assertRecv(Pid, StqAck, ack),
@@ -193,11 +194,45 @@ final_non_200_resp() ->
     {_,timerI,Ref} = TimerI,
 
     %% Trigger timerI
-    ?assertEqual(ok, gen_fsm:send_event({timeout, Ref, timerI})),
+    ?assertEqual(ok, gen_fsm:send_event(Pid, {timeout, Ref, timerI})),
 
     %% Check that fsm has terminated
     ?assertDown(Pid).
 
+final_non_200_resp_nonreliable() ->
+    T1 = 100,
+    TH = 64 * T1,
+    T4 = 10,
+    ConInfo = udp, 
+    StqInv = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
+    Stq301 = stq:new(301, <<"Moved Permanently">>, {2,0}),
+    StqAck = stq:new(ack, <<"sip:bob@localhost.com">>, {2,0}),
+
+    %% Start FSM and check that INVITE is sent to application
+    {ok, Pid} = setup("id", StqInv, ConInfo, [{t1,T1},{t4,T4}]),
+    ?assertMatch({"id", StqInv, ConInfo}, recv({application,invite})),
+
+    %% Send 301 and check that it is sent to transport
+    ?assertEqual(ok, gossip_server_inv_fsm:send(Pid, Stq301)),
+    ?assertMatch(Stq301, recv(transport)),
+    ?assertMatch({T1, timerG, _}, recv(timer)),
+    ?assertMatch({TH, timerH, _}, recv(timer)),
+    
+    %% Send ACK and check that it is sent to application
+    ?assertEqual(ok, gossip_server_inv_fsm:recv(Pid, StqAck)),
+    ?assertMatch({"id",StqAck, ConInfo}, recv({application,ack})),
+    TimerI = recv(timer),
+    ?assertMatch({T4,timerI,_}, TimerI),
+    {_,timerI,Ref} = TimerI,
+
+    %% Trigger timerI
+    ?assertEqual(ok, gen_fsm:send_event(Pid, {timeout, Ref, timerI})),
+
+    %% Check that fsm has terminated
+    erlang:monitor(process, Pid),
+    ?assertMatch({'DOWN',_,_,_,_}, recv()),
+    
+    ok.
 
 recv() ->
     recv(250).
