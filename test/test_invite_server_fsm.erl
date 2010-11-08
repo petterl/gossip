@@ -213,14 +213,12 @@ final_non_200_resp_nonreliable() ->
     ?assertMatch({"id", StqInv, ConInfo}, recv({application,invite})),
 
     %% Send 301 and check that it is sent to transport
-    ?assertEqual(ok, gossip_server_inv_fsm:send(Pid, Stq301)),
-    ?assertMatch(Stq301, recv(transport)),
+    ?assertSend(Pid, Stq301),
     ?assertMatch({T1, timerG, _}, recv(timer)),
     ?assertMatch({TH, timerH, _}, recv(timer)),
     
     %% Send ACK and check that it is sent to application
-    ?assertEqual(ok, gossip_server_inv_fsm:recv(Pid, StqAck)),
-    ?assertMatch({"id",StqAck, ConInfo}, recv({application,ack})),
+    ?assertRecv(Pid, StqAck, ack),
     TimerI = recv(timer),
     ?assertMatch({T4,timerI,_}, TimerI),
     {_,timerI,Ref} = TimerI,
@@ -229,10 +227,7 @@ final_non_200_resp_nonreliable() ->
     ?assertEqual(ok, gen_fsm:send_event(Pid, {timeout, Ref, timerI})),
 
     %% Check that fsm has terminated
-    erlang:monitor(process, Pid),
-    ?assertMatch({'DOWN',_,_,_,_}, recv()),
-    
-    ok.
+    ?assertDown(Pid).
 
 recv() ->
     recv(250).
