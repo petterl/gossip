@@ -6,13 +6,41 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-define(assertSend(Pid, Stq),
+        ?assertEqual(ok, gossip_server_inv_fsm:send(Pid, Stq)),
+        ?assertMatch(Stq, recv(transport))).
+
+-define(assertRecv(Pid, Stq, Method),
+        ?assertEqual(ok, gossip_server_inv_fsm:recv(Pid, Stq)),
+        ?assertMatch({_,Stq, _}, recv({application,Method}))).
+
+-define(assertDown(Pid),
+        erlang:monitor(process, Pid),
+        ?assertMatch({'DOWN',_,_,_,_}, recv())).
+
+-define(assertResponse(Side, Code),
+        (fun() ->
+                 case recv(Side) of
+                     {_,Stq,_} ->
+                         ?assertEqual(response, stq:type(Stq)),
+                         ?assertEqual(Code, stq:code(Stq));
+                     Stq ->
+                         ?assertEqual(response, stq:type(Stq)),
+                         ?assertEqual(Code, stq:code(Stq))
+                 end
+         end)()).
+
+
 invite_test_() ->
     {"Invite Tests",{setup, fun setup/0, fun teardown/1,
      [{"INV -> 200",fun sunny_day/0},
       {"INV -> 100 -> 200",fun wait_for_100/0},
       {"INV -> 100 -> INV -> 100 -> 200",fun wait_for_100_retransmit_inv/0},
       {"INV -> 180 -> 200",fun provisional_resp/0},
-      {"INV -> 301 -> ACK",fun final_non_200_resp/0}]}}.
+      {"INV -> 180 -> INV -> 180 -> 200",
+       fun provisional_resp_restransmit_inv/0},
+      {"INV -> 301 -> ACK",fun final_non_200_resp/0}
+      ]}}.
 
 setup() ->
     code:unstick_mod(gen_fsm),
@@ -34,11 +62,11 @@ setup(Id, Stq, ConInfo, Opts) ->
                         Self ! {{application,ack},
                                 {MeckId, MeckStq, MeckConInfo}}
                 end),
-    meck:expect(gossip_transport, send, fun(phony, MeckStq) ->
+    meck:expect(gossip_transport, send, fun(_Type, MeckStq) ->
                                                 Self ! {transport, MeckStq}
                                         end),
-    meck:expect(gossip_transport, type, fun(phony) ->
-                                                tcp
+    meck:expect(gossip_transport, type, fun(Type) ->
+                                                Type
                                         end),
     meck:expect(gen_fsm, start_timer, fun(Val, Msg) ->
                                               Ref = make_ref(),
@@ -58,66 +86,50 @@ sunny_day() ->
     StqInv = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
     Stq200 = stq:new(200, <<"OK">>, {2,0}),
     
-    {ok, Pid} = setup("id", StqInv, phony, []),
+    {ok, Pid} = setup("id", StqInv, tcp, []),
 
     %% Check that invite is sent to application
-    ?assertMatch({"id", StqInv, phony}, recv({application,invite})),
+    ?assertMatch({"id", StqInv, tcp}, recv({application,invite})),
 
-    ?assertEqual(ok, gossip_server_inv_fsm:send(Pid, Stq200)),
-
-    ?assertMatch(Stq200, recv(transport)),
-    erlang:monitor(process, Pid),
-    ?assertMatch({'DOWN',_,_,_,_}, recv()),
+    ?assertSend(Pid, Stq200),
     
-    ok.
+    ?assertDown(Pid).
 
 wait_for_100() ->
     
     StqInv = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
     Stq200 = stq:new(200, <<"OK">>, {2,0}),
     
-    {ok, Pid} = setup("id", StqInv, phony, []),
+    {ok, Pid} = setup("id", StqInv, tcp, []),
 
     %% Check that invite is sent to application
-    ?assertMatch({"id", StqInv, phony}, recv({application,invite})),
+    ?assertMatch({"id", StqInv, tcp}, recv({application,invite})),
 
-    Stq100 = recv(transport, 300),
-    ?assertEqual(response, stq:type(Stq100)),
-    ?assertEqual(100, stq:code(Stq100)),
+    ?assertResponse(transport, 100),
     
-    gossip_server_inv_fsm:send(Pid, Stq200),
-
-    ?assertMatch(Stq200, recv(transport)),
-    ?assertEqual(timeout, recv(1)),
-    
-    ok.
+    ?assertSend(Pid, Stq200),
+    ?assertDown(Pid).
 
 wait_for_100_retransmit_inv() ->
     
     StqInv = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
     Stq200 = stq:new(200, <<"OK">>, {2,0}),
     
-    {ok, Pid} = setup("id", StqInv, phony, []),
+    {ok, Pid} = setup("id", StqInv, tcp, []),
 
     %% Check that invite is sent to application
-    ?assertMatch({"id", StqInv, phony}, recv({application,invite})),
+    ?assertMatch({"id", StqInv, tcp}, recv({application,invite})),
 
-    Stq100 = recv(transport, 300),
-    ?assertEqual(response, stq:type(Stq100)),
-    ?assertEqual(100, stq:code(Stq100)),
+    ?assertResponse(transport, 100),
 
+    %% Retransmit invite
     gossip_server_inv_fsm:recv(Pid, StqInv),
 
-    Stq100Retrans = recv(transport),
-    ?assertEqual(response, stq:type(Stq100Retrans)),
-    ?assertEqual(100, stq:code(Stq100Retrans)),
-    
-    gossip_server_inv_fsm:send(Pid, Stq200),
+    ?assertResponse(transport, 100),
 
-    ?assertMatch(Stq200, recv(transport)),
-    ?assertEqual(timeout, recv(1)),
+    ?assertSend(Pid, Stq200),
     
-    ok.
+    ?assertDown(Pid).
 
 provisional_resp() ->
     StqInv = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
@@ -125,22 +137,39 @@ provisional_resp() ->
     Stq200 = stq:new(200, <<"OK">>, {2,0}),
 
     %% Start FSM and check that INVITE is sent to application
-    {ok, Pid} = setup("id", StqInv, phony, []),
-    ?assertMatch({"id", StqInv, phony}, recv({application,invite})),
+    {ok, Pid} = setup("id", StqInv, tcp, []),
+    ?assertMatch({"id", StqInv, tcp}, recv({application,invite})),
 
     %% Send 180 and check that it is sent to transport
-    ?assertEqual(ok, gossip_server_inv_fsm:send(Pid, Stq180)),
-    ?assertMatch(Stq180, recv(transport)),
+    ?assertSend(Pid, Stq180),
 
     %% Send 200 and check that it is sent to transport
-    ?assertEqual(ok, gossip_server_inv_fsm:send(Pid, Stq200)),
-    ?assertMatch(Stq200, recv(transport)),
+    ?assertSend(Pid, Stq200),
 
     %% Check that fsm has terminated
-    erlang:monitor(process, Pid),
-    ?assertMatch({'DOWN',_,_,_,_}, recv()),
-    
-    ok.
+    ?assertDown(Pid).
+
+provisional_resp_restransmit_inv() ->
+    StqInv = stq:new(invite, <<"sip:bob@localhost.com">>, {2,0}),
+    Stq180 = stq:new(180, <<"Ringing">>, {2,0}),
+    Stq200 = stq:new(200, <<"OK">>, {2,0}),
+
+    %% Start FSM and check that INVITE is sent to application
+    {ok, Pid} = setup("id", StqInv, tcp, []),
+    ?assertMatch({"id", StqInv, tcp}, recv({application,invite})),
+
+    %% Send 180 and check that it is sent to transport
+    ?assertSend(Pid, Stq180),
+
+    %% Retransmit INV
+    gossip_server_inv_fsm:recv(Pid, StqInv),
+    ?assertResponse(transport, 180),
+
+    %% Send 200 and check that it is sent to transport
+    ?assertSend(Pid, Stq200),
+
+    %% Check that fsm has terminated
+    ?assertDown(Pid).
 
 final_non_200_resp() ->
     T1 = 100,
@@ -150,17 +179,15 @@ final_non_200_resp() ->
     StqAck = stq:new(ack, <<"sip:bob@localhost.com">>, {2,0}),
 
     %% Start FSM and check that INVITE is sent to application
-    {ok, Pid} = setup("id", StqInv, phony, [{t1,T1},{t4,T4}]),
-    ?assertMatch({"id", StqInv, phony}, recv({application,invite})),
+    {ok, Pid} = setup("id", StqInv, tcp, [{t1,T1},{t4,T4}]),
+    ?assertMatch({"id", StqInv, tcp}, recv({application,invite})),
 
     %% Send 301 and check that it is sent to transport
-    ?assertEqual(ok, gossip_server_inv_fsm:send(Pid, Stq301)),
-    ?assertMatch(Stq301, recv(transport)),
+    ?assertSend(Pid, Stq301),
     ?assertMatch({T1, timerG, _}, recv(timer)),
     
     %% Send ACK and check that it is sent to application
-    ?assertEqual(ok, gossip_server_inv_fsm:recv(Pid, StqAck)),
-    ?assertMatch({"id",StqAck, phony}, recv({application,ack})),
+    ?assertRecv(Pid, StqAck, ack),
     TimerI = recv(timer),
     ?assertMatch({0,timerI,_}, TimerI),
     {_,timerI,Ref} = TimerI,
@@ -169,14 +196,11 @@ final_non_200_resp() ->
     ?assertEqual(ok, gen_fsm:send_event({timeout, Ref, timerI})),
 
     %% Check that fsm has terminated
-    erlang:monitor(process, Pid),
-    ?assertMatch({'DOWN',_,_,_,_}, recv()),
-    
-    ok.
+    ?assertDown(Pid).
 
 
 recv() ->
-    recv(200).
+    recv(250).
 recv(TO) when is_integer(TO) ->
     receive
         Msg ->
@@ -185,7 +209,7 @@ recv(TO) when is_integer(TO) ->
             timeout
     end;
 recv(Tag) ->
-    recv(Tag, 200).
+    recv(Tag, 250).
 recv(Tag, TO) ->
     receive
         {Tag,Msg} ->
