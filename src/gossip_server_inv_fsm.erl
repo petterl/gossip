@@ -89,7 +89,7 @@ recv(Pid, STQ) ->
 %% @doc Receive an transport error from the network
 -spec transport_error(pid(), Reason :: term()) -> ok.
 transport_error(Pid, Reason) -> 
-    gen_fsm:send_event(Pid, {transport_error, Reason}).
+    gen_fsm:send_all_state_event(Pid, {transport_error, Reason}).
 
 %%====================================================================
 %% gen_fsm callbacks
@@ -100,9 +100,10 @@ transport_error(Pid, Reason) ->
 	{ok, StateName :: atom(), State :: #state{}, Timeout :: integer()}.
 init({Id, STQ, Con, CallBackMods, Opts}) ->
     call(CallBackMods, invite, [Id, STQ, Con]),
-    T1 = proplists:get_value(t1, Opts, #state.timer1),
-    T2 = proplists:get_value(t2, Opts, #state.timer2),
-    T4 = proplists:get_value(t4, Opts, #state.timer4),
+    DefaultState = #state{},
+    T1 = proplists:get_value(t1, Opts, DefaultState#state.timer1),
+    T2 = proplists:get_value(t2, Opts, DefaultState#state.timer2),
+    T4 = proplists:get_value(t4, Opts, DefaultState#state.timer4),
     {ok, proceeding, #state{id = Id, con = Con, 
 			    callback_modules = CallBackMods,
 			    timer1 = T1, timer2 = T2,
@@ -112,7 +113,7 @@ init({Id, STQ, Con, CallBackMods, Opts}) ->
 %%      and move to Completed state
 -spec proceeding(Event :: term(), State :: #state{}) -> 
     {next_state, NextStateName :: atom(), NextState :: #state{}} |
-	{stop, Reason :: term(), NewState :: #state{}}.
+	{stop, normal, NewState :: #state{}}.
 proceeding(timeout, State = #state{con = Con}) ->
     %% Nothing sent from user in 200 ms, send a 100 Trying to network
     %% TODO: Generate 100 Trying from incoming STQ to set all headers needed.
@@ -152,19 +153,14 @@ proceeding({send, STQ}, State = #state{con = Con, timer1 = T1}) ->
 	Code when Code >= 200, Code =< 299 -> 
 	    %% Final ok response, shut down
 	    {stop, normal, State}
-    end;
-proceeding({transport_error, Reason}, 
-	   State = #state{id = Id, con=Con, callback_modules = CallBackMods}) ->
-    %% Transport error from network, send to user
-    call(CallBackMods, transport_error, [Id, Reason, Con]),
-    {stop, Reason, State}.
+    end.
 
 %% @doc Completed state, waiting for ACK from network to move to Confirmed state
 -spec completed(Event :: term(), State :: #state{}) -> 
     {next_state, NextStateName :: atom(), NextState :: #state{}} |         
 	{next_state,NextStateName :: atom(),NextState :: #state{},
 	 Timeout::integer()} |
-	{stop, Reason :: term(), NewState :: #state{}}.
+	{stop, normal, NewState :: #state{}}.
 completed({timeout, _Ref, timerG}, State = #state{con=Con, resp_stq = RespSTQ,
 						  timer1 = T1, timer2 = T2}) ->
     %% Resend last response
@@ -176,7 +172,7 @@ completed({timeout, _Ref, timerG}, State = #state{con=Con, resp_stq = RespSTQ,
 completed({timeout, _Ref, timerH}, 
 	  State = #state{id = Id, con = Con, 
 			 callback_modules=CallBackMods}) ->
-    call(CallBackMods, transport_error, [Id, transaction_failure, Con]),
+    call(CallBackMods, transport_error, [Id, timerH, Con]),
     %% Timeout, terminate
     {stop, normal, State};
 completed({recv, STQ}, State = #state{id = Id, con = Con, 
@@ -200,28 +196,20 @@ completed({recv, STQ}, State = #state{id = Id, con = Con,
 	_ ->
 	    %% Other messages are ignored
 	    {next_state, completed, State}
-    end;
-completed({transport_error, Reason}, 
-	  State = #state{id = Id, con=Con, callback_modules = CallBackMods}) ->
-    %% Transport error from network, send to user
-    call(CallBackMods, transport_error, [Id, Reason, Con]),
-    {stop, Reason, State}.
+    end.
 
 %% @doc Confirmed state, waiting timerI and shutdown
 -spec confirmed(Event :: term(), State::#state{}) -> 
-	{stop, Reason :: term(), NewState :: #state{}}.
-confirmed({recv, STQ}, State) ->
+	{stop, normal, NewState :: #state{}}.
+confirmed({recv, _STQ}, State) ->
     %% Received additional ACK from network
-    case stq:method(STQ) of
-	ack -> ok
-    end,
-    {next_state, comfirmed, State};
+    {next_state, confirmed, State};
 confirmed({timeout, _Ref, timerI}, State) ->
     %% Ignore all timeouts
     {stop, normal, State};
 confirmed({timeout, _Ref, _Timer}, State) ->
     %% Ignore all other timeouts
-    {next_state, comfirmed, State}.
+    {next_state, confirmed, State}.
 
 %%--------------------------------------------------------------------
 %% Function: 
@@ -234,8 +222,12 @@ confirmed({timeout, _Ref, _Timer}, State) ->
 %% gen_fsm:send_all_state_event/2, this function is called to handle
 %% the event.
 %%--------------------------------------------------------------------
-handle_event(_Event, StateName, State) ->
-    {next_state, StateName, State}.
+handle_event({transport_error, Reason}, _StateName, 
+	     State = #state{id = Id, con=Con, 
+			    callback_modules = CallBackMods}) ->
+    %% Transport error from network, send to user
+    call(CallBackMods, transport_error, [Id, Reason, Con]),
+    {stop, normal, State}.
 
 %%--------------------------------------------------------------------
 %% Function: 
