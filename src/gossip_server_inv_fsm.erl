@@ -62,9 +62,9 @@
 		 con :: connection_info(), 
 		 resp_stq :: stq_opaque() | undefined,
 		 callback_modules = [] :: list(atom()),
-		 timer1 = 500,
-		 timer2 = 4000,
-		 timer4 = 5000}).
+		 timer1 = 500 :: integer(),
+		 timer2 = 4000 :: integer(),
+		 timer4 = 5000 :: integer()}).
 
 %%====================================================================
 %% API
