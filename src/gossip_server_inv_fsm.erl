@@ -49,6 +49,7 @@
 
 -behaviour(gen_fsm).
 -include_lib("gossip.hrl").
+-include_lib("gossip_internal.hrl").
 -include_lib("esessin/src/stq.hrl").
 
 %% API
@@ -62,9 +63,9 @@
 		 con :: connection_info(), 
 		 resp_stq :: stq_opaque() | undefined,
 		 callback_modules = [] :: list(atom()),
-		 timer1 = 500 :: integer(),
-		 timer2 = 4000 :: integer(),
-		 timer4 = 5000 :: integer()}).
+		 timer1 :: integer(),
+		 timer2 :: integer(),
+		 timer4 :: integer()}).
 
 %%====================================================================
 %% API
@@ -100,10 +101,9 @@ transport_error(Pid, Reason) ->
 	{ok, StateName :: atom(), State :: #state{}, Timeout :: integer()}.
 init({Id, STQ, Con, CallBackMods, Opts}) ->
     call(CallBackMods, invite, [Id, STQ, Con]),
-    DefaultState = #state{},
-    T1 = proplists:get_value(t1, Opts, DefaultState#state.timer1),
-    T2 = proplists:get_value(t2, Opts, DefaultState#state.timer2),
-    T4 = proplists:get_value(t4, Opts, DefaultState#state.timer4),
+    T1 = proplists:get_value(t1, Opts, ?Timer1_default),
+    T2 = proplists:get_value(t2, Opts, ?Timer2_default),
+    T4 = proplists:get_value(t4, Opts, ?Timer4_default),
     {ok, proceeding, #state{id = Id, con = Con, 
 			    callback_modules = CallBackMods,
 			    timer1 = T1, timer2 = T2,
@@ -158,8 +158,6 @@ proceeding({send, STQ}, State = #state{con = Con, timer1 = T1}) ->
 %% @doc Completed state, waiting for ACK from network to move to Confirmed state
 -spec completed(Event :: term(), State :: #state{}) -> 
     {next_state, NextStateName :: atom(), NextState :: #state{}} |         
-	{next_state,NextStateName :: atom(),NextState :: #state{},
-	 Timeout::integer()} |
 	{stop, normal, NewState :: #state{}}.
 completed({timeout, _Ref, timerG}, State = #state{con=Con, resp_stq = RespSTQ,
 						  timer1 = T1, timer2 = T2}) ->
@@ -225,6 +223,7 @@ confirmed({timeout, _Ref, _Timer}, State) ->
 handle_event({transport_error, Reason}, _StateName, 
 	     State = #state{id = Id, con=Con, 
 			    callback_modules = CallBackMods}) ->
+    %% TODO: Implement 3263 handling for retry sending to other server
     %% Transport error from network, send to user
     call(CallBackMods, transport_error, [Id, Reason, Con]),
     {stop, normal, State}.

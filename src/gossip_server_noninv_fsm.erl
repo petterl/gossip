@@ -48,6 +48,7 @@
 
 -behaviour(gen_fsm).
 -include_lib("gossip.hrl").
+-include_lib("gossip_internal.hrl").
 -include_lib("esessin/src/stq.hrl").
 
 %% API
@@ -61,7 +62,7 @@
 		 con :: connection_info(), 
 		 resp_stq :: stq_opaque() | undefined,
 		 callback_modules = [] :: list(atom()),
-		 timer1 = 500 :: integer()}).
+		 timer1 :: integer()}).
 
 %%====================================================================
 %% API
@@ -93,15 +94,12 @@ transport_error(Pid, Reason) ->
 %%====================================================================
 %% @doc Initial state, sends INVITE to user and moves to Proceeding state
 -spec init({transaction_id(), stq_opaque(), 
-	    connection_info(), Opts :: term()}) -> 
-    {ok, StateName :: atom(), State :: #state{}} |
-	{ok, StateName :: atom(), State :: #state{}, Timeout :: integer()} |
-	ignore | {stop, StopReason :: term()}.
+	    connection_info(),list(atom()), Opts :: term()}) -> 
+    {ok, StateName :: atom(), State :: #state{}}.
 init({Id, STQ, Con, CallBackMods, Opts}) ->
     Method = stq:method(STQ),
     call(CallBackMods, Method, [Id, STQ, Con]),
-    DefaultState = #state{},
-    T1 = proplists:get_value(t1, Opts, DefaultState#state.timer1),
+    T1 = proplists:get_value(t1, Opts, ?Timer1_default),
     {ok, trying, #state{id = Id, con = Con, 
 			callback_modules = CallBackMods,
 			timer1 = T1}}.
@@ -109,10 +107,7 @@ init({Id, STQ, Con, CallBackMods, Opts}) ->
 %% @doc Trying state, waiting for TU to send response to network, 
 %%      and move to Proceeding state
 -spec trying(Event :: term(), State :: #state{}) -> 
-    {next_state, NextStateName :: atom(), NextState :: #state{}} |
-	{next_state, NextStateName :: atom(), NextState :: #state{},
-	 Timeout :: integer()} |
-	{stop, Reason :: term(), NewState :: atom()}.
+    {next_state, NextStateName :: atom(), NextState :: #state{}}.
 trying({recv, _STQ}, State) ->
     %% Ignore other messages receivied
     {next_state, trying, State};
@@ -136,10 +131,7 @@ trying({send, STQ}, State = #state{con = Con, timer1 = T1}) ->
 %% @doc Proceeding state, waiting for final response from TU
 %%      and move to Completed state
 -spec proceeding(Event :: term(), State :: #state{}) -> 
-    {next_state, NextStateName :: atom(), NextState :: #state{}} |
-	{next_state, NextStateName :: atom(), NextState :: #state{},
-	 Timeout :: integer()} |
-	{stop, Reason :: term(), NewState :: atom()}.
+    {next_state, NextStateName :: atom(), NextState :: #state{}}.
 proceeding({recv, _STQ}, State = #state{con = Con, resp_stq = RespSTQ}) ->
     %% ReReceived request, resend last provisional response
     gossip_transport:send(Con, RespSTQ),
@@ -160,11 +152,9 @@ proceeding({send, STQ}, State = #state{con = Con, timer1 = T1}) ->
 	    {next_state, completed, State#state{resp_stq=STQ}}
     end.
 
-%% @doc Completed state, waiting for ACK from network to move to Confirmed state
+%% @doc Completed state, waiting timerJ to terminate
 -spec completed(Event :: term(), State :: #state{}) -> 
     {next_state, NextStateName :: atom(), NextState :: #state{}} |         
-	{next_state,NextStateName :: atom(),NextState :: #state{},
-	 Timeout::integer()} |
 	{stop, Reason :: term(), NewState :: atom()}.
 completed({timeout, _Ref, timerJ}, State) ->
     %% Terminate
