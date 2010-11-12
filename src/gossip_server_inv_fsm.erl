@@ -61,6 +61,7 @@
 
 -record(state, { id :: transaction_id(), 
 		 con :: connection_info(), 
+		 stq :: stq_opaque(),
 		 resp_stq :: stq_opaque() | undefined,
 		 callback_modules = [] :: list(atom()),
 		 timer1 :: integer(),
@@ -104,7 +105,7 @@ init({Id, STQ, Con, CallBackMods, Opts}) ->
     T1 = proplists:get_value(t1, Opts, ?Timer1_default),
     T2 = proplists:get_value(t2, Opts, ?Timer2_default),
     T4 = proplists:get_value(t4, Opts, ?Timer4_default),
-    {ok, proceeding, #state{id = Id, con = Con, 
+    {ok, proceeding, #state{id = Id, con = Con, stq=STQ,
 			    callback_modules = CallBackMods,
 			    timer1 = T1, timer2 = T2,
 			    timer4 = T4}, 200}.
@@ -114,10 +115,10 @@ init({Id, STQ, Con, CallBackMods, Opts}) ->
 -spec proceeding(Event :: term(), State :: #state{}) -> 
     {next_state, NextStateName :: atom(), NextState :: #state{}} |
 	{stop, normal, NewState :: #state{}}.
-proceeding(timeout, State = #state{con = Con}) ->
+proceeding(timeout, State = #state{con = Con, stq=STQ}) ->
     %% Nothing sent from user in 200 ms, send a 100 Trying to network
     %% TODO: Generate 100 Trying from incoming STQ to set all headers needed.
-    TryingSTQ = stq:new(100,<<"Trying">>, {2,0}),
+    TryingSTQ = gossip_lib:gen_response_from_request(100,<<"Trying">>, STQ),
     gossip_transport:send(Con, TryingSTQ),
     {next_state, proceeding, State#state{resp_stq = TryingSTQ}};
 proceeding({recv, STQ}, State = #state{con = Con, resp_stq = RespSTQ}) ->
