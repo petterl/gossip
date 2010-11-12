@@ -16,33 +16,31 @@
 %% @doc Get a transaction id from an STQ
 -spec get_transaction_id(stq_opaque()) -> transaction_id().
 get_transaction_id(STQ) ->
-    TopVia = first(stq:header('Via', STQ)),
-    case param(<<"branch">>, TopVia) of
-	<<"z9hG4bK",_Rest/binary>> = Branch ->
-	    %% Compliant with RFC 3216
-	    SentBy = param(sent_by, TopVia),
-	    Method = case stq:method(STQ) of
-			 ack -> invite;
-			 M -> M
-		     end,
-	    {Branch, SentBy, Method};
-	Branch ->
-	    %% Not compliant 
+    case stq:header('Via', STQ) of
+	[{TopVia, _}|_] ->
+	    case param(<<"branch">>, TopVia) of
+		<<"z9hG4bK",_Rest/binary>> = Branch ->
+		    %% Compliant with RFC 3216
+		    SentBy = param(sent_by, TopVia),
+		    Method = case stq:method(STQ) of
+				 ack -> invite;
+				 M -> M
+			     end,
+		    {Branch, SentBy, Method};
+		Branch ->
+		    %% Not compliant 
+		    %% TODO: fallback to RFC 2543 
+		    {error, {non_compliant_branch, Branch}}
+	    end;
+	_ ->
+	    %% Missing Via header
 	    %% TODO: fallback to RFC 2543 
-	    {error, non_compliant_branch, Branch}
+	    {error, missing_via_header}
     end.
 
 param(sent_by, Header) ->
-    {SentBy, _Params}=esessin_header:'Via'(Header),
+    {SentBy, _Params}=Header,
     SentBy;
 param(Param, Header) ->
-    {_SentBy, Params}=esessin_header:'Via'(Header),
+    {_SentBy, Params}=Header,
     proplists:get_value(Param, Params).
-
-first([{Header, LineNo}|R]) ->
-    first(R, {Header, LineNo}).
-first([{Header, LineNo} | R], {_TopHeader, TopLineNo}) 
-  when LineNo < TopLineNo ->
-    first(R, {Header, LineNo});
-first([], {Header, _LineNo}) ->
-    Header.
