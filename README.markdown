@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/petterl/gossip.png)](http://travis-ci.org/petterl/gossip)
+
 gossip
 ====================
 An erlanG Opensource Stack for Session Initiation Protocol
